@@ -1,7 +1,7 @@
-diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/drivers/md/dm-cache.c
---- linux-2.6.21.7-orig/drivers/md/dm-cache.c	1969-12-31 19:00:00.000000000 -0500
-+++ linux-2.6.21.7-dmcache/drivers/md/dm-cache.c	2007-08-23 14:10:58.000000000 -0400
-@@ -0,0 +1,1766 @@
+diff -Naur linux-2.6.19.1-orig/drivers/md/dm-cache.c linux-2.6.19.1-dmcache/drivers/md/dm-cache.c
+--- linux-2.6.19.1-orig/drivers/md/dm-cache.c	1969-12-31 19:00:00.000000000 -0500
++++ linux-2.6.19.1-dmcache/drivers/md/dm-cache.c	2007-01-01 18:26:06.000000000 -0500
+@@ -0,0 +1,1755 @@
 +/****************************************************************************
 + *  dm-cache.c
 + *  Device mapper target for block-level disk caching
@@ -66,6 +66,11 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +
 +/* Number of pages for I/O */
 +#define DMCACHE_COPY_PAGES 1024
++
++/* Hash function */
++#define HASH 0		/* Use hash_long */
++#define UNIFORM 1	/* Evenly distributed */
++#define DEFAULT_HASHFUNC UNIFORM
 +
 +/* States of a cache block */
 +#define INVALID		0
@@ -267,7 +272,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +
 +#define MIN_JOBS 1024
 +
-+static struct kmem_cache *_job_cache;
++static kmem_cache_t *_job_cache;
 +static mempool_t *_job_pool;
 +
 +static DEFINE_SPINLOCK(_job_lock);
@@ -346,6 +351,8 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +static void io_callback(unsigned long error, void *context)
 +{
 +	struct kcached_job *job = (struct kcached_job *) context;
++	struct bio *bio = job->bio, *clone;
++	int i;
 +
 +	if (error) {
 +		/* TODO */
@@ -354,6 +361,22 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	}
 +
 +	if (job->rw == READ) {
++		/* A READ is acknowledged as soon as the requested data is fetched, and
++		   does not have to wait for it being stored in cache. The bio is cloned
++		   so that the original one can be ended here. But to avoid copying
++		   pages, we reuse the pages allocated for the original bio, and mark
++		   each of them to prevent the pages being freed before the cache
++		   insertion is completed.
++		 */
++		if (bio_data_dir(bio) == READ) {
++			clone = bio_clone(bio, GFP_NOIO);
++			for (i=bio->bi_idx; i<bio->bi_vcnt; i++) {
++				get_page(bio->bi_io_vec[i].bv_page);
++			}
++			DPRINTK("bio ended for %llu:%u", bio->bi_sector, bio->bi_size);
++			        bio_endio(bio, bio->bi_size, 0);
++			job->bio = clone;
++		}
 +		job->rw = WRITE;
 +		push(&_io_jobs, job);
 +	} else
@@ -384,7 +407,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	tail = to_bytes(dmc->block_size) - bio->bi_size - head;
 +
 +	DPRINTK("do_fetch: %llu(%llu->%llu,%llu), head:%u,tail:%u",
-+	        bio->bi_sector, job->src.sector, job->dest.sector,
++		    bio->bi_sector, job->src.sector, job->dest.sector,
 +	        job->src.count, head, tail);
 +
 +	if (bio_data_dir(bio) == READ) { /* The original request is a READ */
@@ -514,7 +537,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +static int do_store(struct kcached_job *job)
 +{
 +	int i, j, r = 0;
-+	struct bio *bio = job->bio, *clone;
++	struct bio *bio = job->bio;
 +	struct cache_c *dmc = job->dmc;
 +	unsigned int offset, head, tail, remaining, nr_vecs;
 +	struct bio_vec *bvec;
@@ -526,24 +549,6 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	DPRINTK("do_store: %llu(%llu->%llu,%llu), head:%u,tail:%u",
 +	        bio->bi_sector, job->src.sector, job->dest.sector,
 +	        job->src.count, head, tail);
-+
-+	/* A READ is acknowledged as soon as the requested data is fetched, and
-+	   does not have to wait for it being stored in cache. The bio is cloned
-+	   so that the original one can be ended here. But to avoid copying
-+	   pages, we reuse the pages allocated for the original bio, and mark
-+	   each of them to prevent the pages being freed before the cache
-+	   insertion is completed.
-+	 */
-+	if (bio_data_dir(bio) == READ) {
-+		clone = bio_clone(bio, GFP_NOIO);
-+		for (i=bio->bi_idx; i<bio->bi_vcnt; i++) {
-+			get_page(bio->bi_io_vec[i].bv_page);
-+		}
-+		DPRINTK("bio ended for %llu:%u", bio->bi_sector, bio->bi_size);
-+		bio_endio(bio, bio->bi_size, 0);
-+		bio = clone;
-+		job->bio = clone;
-+	}
 +
 +	if (0 == job->nr_pages) /* Original request is aligned with cache blocks */
 +		r = dm_io_async_bvec(1, &job->dest, WRITE, bio->bi_io_vec + bio->bi_idx,
@@ -614,6 +619,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +{
 +	int r = 0;
 +
++	DPRINTK("do_pages: %u", job->nr_pages);
 +	r = kcached_get_pages(job->dmc, job->nr_pages, &job->pages);
 +
 +	if (r == -ENOMEM) /* can't complete now */
@@ -635,7 +641,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	spin_lock(&cacheblock->lock);
 +	bio = bio_list_get(&cacheblock->bios);
 +	if (is_state(cacheblock->state, WRITEBACK)) { /* Write back finished */
-+		cacheblock->state = VALID;
++		cacheblock->state = INVALID;
 +	} else { /* Cache insertion finished */
 +		set_state(cacheblock->state, VALID);
 +		clear_state(cacheblock->state, RESERVED);
@@ -714,7 +720,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	return count;
 +}
 +
-+static void do_work(struct work_struct *ignored)
++static void do_work(void *ignored)
 +{
 +	process_jobs(&_complete_jobs, do_complete);
 +	process_jobs(&_pages_jobs, do_pages);
@@ -825,8 +831,13 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +
 +	value = (unsigned long)(block >> (dmc->block_shift +
 +	        dmc->consecutive_shift));
-+	set_number = hash_long(value, dmc->bits) / dmc->assoc;
++	if (DEFAULT_HASHFUNC == HASH)
++		set_number = hash_long(value, dmc->bits) / dmc->assoc;
++	else if(DEFAULT_HASHFUNC == UNIFORM)
++		set_number = value & ((unsigned long)(dmc->size >>
++	                 dmc->consecutive_shift) - 1);
 +
++	DPRINTK("Hash: %llu(%lu)->%lu", block, value, set_number);
 + 	return set_number;
 +}
 +
@@ -877,7 +888,6 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	unsigned long counter = ULONG_MAX, clean_counter = ULONG_MAX;
 +
 +	index=set_number * cache_assoc;
-+
 +	for (i=0; i<cache_assoc; i++, index++) {
 +		if (is_state(cache[index].state, VALID) ||
 +		    is_state(cache[index].state, RESERVED)) {
@@ -1075,7 +1085,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	struct cacheblock *cache = dmc->cache;
 +	unsigned int offset, head, tail;
 +	struct kcached_job *job;
-+	sector_t request_block, left;
++	sector_t request_block;
 +
 +	offset = (unsigned int)(bio->bi_sector & dmc->block_mask);
 +	request_block = bio->bi_sector - offset;
@@ -1092,14 +1102,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	job = new_kcached_job(dmc, bio, request_block, cache_block);
 +
 +	head = to_bytes(offset);
-+
-+	left = (dmc->src_dev->bdev->bd_inode->i_size>>9) - request_block;
-+	if (left < dmc->block_size) {
-+		tail = to_bytes(left) - bio->bi_size - head;
-+		job->src.count = left;
-+		job->dest.count = left;
-+	} else
-+		tail = to_bytes(dmc->block_size) - bio->bi_size - head;
++	tail = to_bytes(dmc->block_size) - bio->bi_size - head;
 +
 +	/* Requested block is aligned with a cache block */
 +	if (0 == head && 0 == tail)
@@ -1125,7 +1128,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	struct cacheblock *cache = dmc->cache;
 +	unsigned int offset, head, tail;
 +	struct kcached_job *job;
-+	sector_t request_block, left;
++	sector_t request_block;
 +
 +	if (dmc->write_policy == WRITE_THROUGH) { /* Forward request to souuce */
 +		bio->bi_bdev = dmc->src_dev->bdev;
@@ -1150,19 +1153,13 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	job = new_kcached_job(dmc, bio, request_block, cache_block);
 +
 +	head = to_bytes(offset);
-+	left = (dmc->src_dev->bdev->bd_inode->i_size>>9) - request_block;
-+	if (left < dmc->block_size) {
-+		tail = to_bytes(left) - bio->bi_size - head;
-+		job->src.count = left;
-+		job->dest.count = left;
-+	} else
-+		tail = to_bytes(dmc->block_size) - bio->bi_size - head;
++	tail = to_bytes(dmc->block_size) - bio->bi_size - head;
 +
 +	if (0 == head && 0 == tail) { /* Requested is aligned with a cache block */
 +		job->nr_pages = 0;
 +		job->rw = WRITE;
 +	} else if (head && tail){ /* Special case: need to pad both head and tail */
-+		job->nr_pages = dm_div_up(to_bytes(job->src.count), PAGE_SIZE);
++		job->nr_pages = dm_div_up(to_bytes(dmc->block_size), PAGE_SIZE);
 +		job->rw = READ;
 +	} else {
 +		if (head) { /* Fetch only head */
@@ -1206,7 +1203,6 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +
 +	offset = bio->bi_sector & dmc->block_mask;
 +	request_block = bio->bi_sector - offset;
-+
 +	DPRINTK("Got a %s for %llu ((%llu:%llu), %u bytes)",
 +	        bio_rw(bio) == WRITE ? "WRITE" : (bio_rw(bio) == READ ?
 +	        "READ":"READA"), bio->bi_sector, request_block, offset,
@@ -1243,7 +1239,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +static int load_metadata(struct cache_c *dmc) {
 +	struct io_region where;
 +	unsigned long bits;
-+	sector_t dev_size = dmc->cache_dev->bdev->bd_inode->i_size >> 9;
++	sector_t dev_size = to_sector(dmc->cache_dev->bdev->bd_inode->i_size);
 +	sector_t meta_size, *meta_data, i, j, index = 0, limit, order;
 +	struct meta_dmc *meta_dmc;
 +	unsigned int chksum = 0, chksum_sav, consecutive_blocks;
@@ -1283,14 +1279,12 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +
 +
 +	order = dmc->size * sizeof(struct cacheblock);
-+	DMINFO("Allocate %lluKB (%luB per) mem for %llu-entry cache" \
++	DMINFO("Allocate %lluKB (%uB per) mem for %llu-entry cache" \
 +	       "(capacity:%lluMB, associativity:%u, block size:%u " \
 +	       "sectors(%uKB), %s)",
-+	       (unsigned long long) order >> 10, (unsigned long) sizeof(struct cacheblock),
-+	       (unsigned long long) dmc->size,
-+	       (unsigned long long) dmc->size * dmc->block_size >> (20-SECTOR_SHIFT),
-+	       dmc->assoc, dmc->block_size,
-+	       dmc->block_size >> (10-SECTOR_SHIFT),
++	       order >> 10, sizeof(struct cacheblock), dmc->size,
++	       dmc->size * dmc->block_size >> (20-SECTOR_SHIFT), dmc->assoc,
++	       dmc->block_size, dmc->block_size >> (10-SECTOR_SHIFT),
 +	       dmc->write_policy ? "write-back" : "write-through");
 +	dmc->cache = (struct cacheblock *)vmalloc(order);
 +	if (!dmc->cache) {
@@ -1340,7 +1334,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	}
 +
 +	DMINFO("Cache metadata loaded from disk (offset %llu)",
-+	       (unsigned long long) dev_size - 1 - (unsigned long long) meta_size);;
++	       dev_size - 1 - meta_size);;
 +
 +	return 0;
 +}
@@ -1349,7 +1343,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +static int dump_metadata(struct cache_c *dmc) {
 +	struct io_region where;
 +	unsigned long bits;
-+	sector_t dev_size = dmc->cache_dev->bdev->bd_inode->i_size >> 9;
++	sector_t dev_size = to_sector(dmc->cache_dev->bdev->bd_inode->i_size);
 +	sector_t meta_size, i, j, index = 0, limit, *meta_data;
 +	struct meta_dmc *meta_dmc;
 +	unsigned int chksum = 0;
@@ -1397,7 +1391,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +
 +	DPRINTK("Store metadata to disk: block size(%u), cache size(%llu), " \
 +	        "associativity(%u), write policy(%u), checksum(%u)",
-+	        meta_dmc->block_size, (unsigned long long) meta_dmc->size,
++	        meta_dmc->block_size, meta_dmc->size,
 +	        meta_dmc->assoc, meta_dmc->write_policy,
 +	        meta_dmc->chksum);
 +
@@ -1408,7 +1402,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	vfree((void *)meta_dmc);
 +
 +	DMINFO("Cache metadata saved to disk (offset %llu)",
-+	       (unsigned long long) dev_size - 1 - (unsigned long long) meta_size);
++	       dev_size - 1 - meta_size);
 +
 +	return 0;
 +}
@@ -1430,11 +1424,10 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	unsigned int consecutive_blocks, persistence = 0;
 +	sector_t localsize, i, order;
 +	sector_t data_size, meta_size, dev_size;
-+	unsigned long long cache_size;
 +	int r = -EINVAL;
 +
 +	if (argc < 2) {
-+		ti->error = "dm-cache: Need at least 2 arguments (src dev and cache dev)";
++		ti->error = "dm-cache: Need at least 2 arguments";
 +		goto bad;
 +	}
 +
@@ -1459,7 +1452,6 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +		goto bad2;
 +	}
 +
-+
 +	r = kcopyd_client_create(DMCACHE_COPY_PAGES, &dmc->kcp_client);
 +	if (r) {
 +		ti->error = "Failed to initialize kcopyd client\n";
@@ -1471,6 +1463,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +		ti->error = "Failed to initialize kcached";
 +		goto bad4;
 +	}
++
 +
 +	if (argc >= 3) {
 +		if (sscanf(argv[2], "%u", &persistence) != 1) {
@@ -1509,12 +1502,11 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	dmc->block_mask = dmc->block_size - 1;
 +
 +	if (argc >= 5) {
-+		if (sscanf(argv[4], "%llu", &cache_size) != 1) {
++		if (sscanf(argv[4], "%llu", &dmc->size) != 1) {
 +			ti->error = "dm-cache: Invalid cache size";
 +			r = -EINVAL;
 +			goto bad5;
 +		}
-+		dmc->size = (sector_t) cache_size;
 +		if (!dmc->size || (dmc->size & (dmc->size - 1))) {
 +			ti->error = "dm-cache: Invalid cache size";
 +			r = -EINVAL;
@@ -1540,15 +1532,13 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	} else
 +		dmc->assoc = DEFAULT_CACHE_ASSOC;
 +
-+	DMINFO("%lld", dmc->cache_dev->bdev->bd_inode->i_size);
-+	dev_size = dmc->cache_dev->bdev->bd_inode->i_size >> 9;
++	dev_size = to_sector(dmc->cache_dev->bdev->bd_inode->i_size);
 +	data_size = dmc->size * dmc->block_size;
 +	meta_size = dm_div_up(dmc->size * sizeof(sector_t), 512) + 1;
 +	if ((data_size + meta_size) > dev_size) {
 +		DMERR("Requested cache size exeeds the cache device's capacity" \
 +		      "(%llu+%llu>%llu)",
-+  		      (unsigned long long) data_size, (unsigned long long) meta_size,
-+  		      (unsigned long long) dev_size);
++  		      data_size, meta_size, dev_size);
 +		ti->error = "dm-cache: Invalid cache size";
 +		r = -EINVAL;
 +		goto bad5;
@@ -1573,22 +1563,20 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +
 +	order = dmc->size * sizeof(struct cacheblock);
 +	localsize = data_size >> 11;
-+	DMINFO("Allocate %lluKB (%luB per) mem for %llu-entry cache" \
++	DMINFO("Allocate %lluKB (%uB per) mem for %llu-entry cache" \
 +	       "(capacity:%lluMB, associativity:%u, block size:%u " \
 +	       "sectors(%uKB), %s)",
-+	       (unsigned long long) order >> 10, (unsigned long) sizeof(struct cacheblock),
-+	       (unsigned long long) dmc->size,
-+	       (unsigned long long) data_size >> (20-SECTOR_SHIFT),
-+	       dmc->assoc, dmc->block_size,
++	       order >> 10, sizeof(struct cacheblock), dmc->size,
++	       data_size >> (20-SECTOR_SHIFT), dmc->assoc, dmc->block_size,
 +	       dmc->block_size >> (10-SECTOR_SHIFT),
 +	       dmc->write_policy ? "write-back" : "write-through");
-+
 +	dmc->cache = (struct cacheblock *)vmalloc(order);
 +	if (!dmc->cache) {
 +		ti->error = "Unable to allocate memory";
 +		r = -ENOMEM;
 +		goto bad5;
 +	}
++
 +
 +init:	/* Initialize the cache structs */
 +	for (i=0; i<dmc->size; i++) {
@@ -1609,6 +1597,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +
 +	ti->split_io = dmc->block_size;
 +	ti->private = dmc;
++
 +	return 0;
 +
 +bad5:
@@ -1632,7 +1621,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +	sector_t i = 0;
 +	unsigned int j;
 +
-+	DMINFO("Flush dirty blocks (%llu) ...", (unsigned long long) dmc->dirty_blocks);
++	DMINFO("Flush dirty blocks (%llu) ...", dmc->dirty_blocks);
 +	while (i< dmc->size) {
 +		j = 1;
 +		if (is_state(cache[i].state, DIRTY)) {
@@ -1698,8 +1687,8 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +		break;
 +	case STATUSTYPE_TABLE:
 +		DMEMIT("conf: capacity(%lluM), associativity(%u), block size(%uK), %s",
-+	           (unsigned long long) dmc->size * dmc->block_size >> 11,
-+	           dmc->assoc, dmc->block_size>>(10-SECTOR_SHIFT),
++	           dmc->size*dmc->block_size>>11, dmc->assoc,
++	           dmc->block_size>>(10-SECTOR_SHIFT),
 +	           dmc->write_policy ? "write-back":"write-through");
 +		break;
 +	}
@@ -1737,7 +1726,7 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +		DMERR("failed to start kcached");
 +		return -ENOMEM;
 +	}
-+	INIT_WORK(&_kcached_work, do_work);
++	INIT_WORK(&_kcached_work, do_work, NULL);
 +
 +	r = dm_register_target(&cache_target);
 +	if (r < 0) {
@@ -1766,12 +1755,12 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/dm-cache.c linux-2.6.21.7-dmcache/driv
 +module_exit(dm_cache_exit);
 +
 +MODULE_DESCRIPTION(DM_NAME " cache target");
-+MODULE_AUTHOR("Ming Zhao <mingzhao99th@gmail.com>");
++MODULE_AUTHOR("Ming");
 +MODULE_LICENSE("GPL");
-diff -Naur linux-2.6.21.7-orig/drivers/md/Kconfig linux-2.6.21.7-dmcache/drivers/md/Kconfig
---- linux-2.6.21.7-orig/drivers/md/Kconfig	2007-08-04 12:11:13.000000000 -0400
-+++ linux-2.6.21.7-dmcache/drivers/md/Kconfig	2007-08-23 14:16:07.000000000 -0400
-@@ -262,6 +262,12 @@
+diff -Naur linux-2.6.19.1-orig/drivers/md/Kconfig linux-2.6.19.1-dmcache/drivers/md/Kconfig
+--- linux-2.6.19.1-orig/drivers/md/Kconfig	2006-12-31 12:18:20.000000000 -0500
++++ linux-2.6.19.1-dmcache/drivers/md/Kconfig	2006-12-31 13:18:18.000000000 -0500
+@@ -261,6 +261,12 @@
  	---help---
  	  Multipath support for EMC CX/AX series hardware.
  
@@ -1784,9 +1773,9 @@ diff -Naur linux-2.6.21.7-orig/drivers/md/Kconfig linux-2.6.21.7-dmcache/drivers
  endmenu
  
  endif
-diff -Naur linux-2.6.21.7-orig/drivers/md/Makefile linux-2.6.21.7-dmcache/drivers/md/Makefile
---- linux-2.6.21.7-orig/drivers/md/Makefile	2007-08-04 12:11:13.000000000 -0400
-+++ linux-2.6.21.7-dmcache/drivers/md/Makefile	2007-08-23 14:16:25.000000000 -0400
+diff -Naur linux-2.6.19.1-orig/drivers/md/Makefile linux-2.6.19.1-dmcache/drivers/md/Makefile
+--- linux-2.6.19.1-orig/drivers/md/Makefile	2006-12-31 12:18:20.000000000 -0500
++++ linux-2.6.19.1-dmcache/drivers/md/Makefile	2006-12-31 13:22:27.000000000 -0500
 @@ -36,6 +36,7 @@
  obj-$(CONFIG_DM_SNAPSHOT)	+= dm-snapshot.o
  obj-$(CONFIG_DM_MIRROR)		+= dm-mirror.o
