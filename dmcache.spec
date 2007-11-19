@@ -73,7 +73,7 @@ filterdiff -x '*/Kconfig' -x '*/Makefile' %{PATCH0} | %{__patch} -p1
 cat > drivers/md/Makefile << EOF
 obj-m += dm-cache.o
 
-CFLAGS += -I%{_kernelsrcdir}/drivers/md
+EXTRA_CFLAGS="-I%{_kernelsrcdir}/drivers/md"
 EOF
 
 %build
