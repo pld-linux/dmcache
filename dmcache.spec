@@ -19,7 +19,7 @@
 # main package.
 #
 %define		_rel	0.1
-Summary:	DM-Cache: A Generic drivers-level Disk Cache
+Summary:	DM-Cache: A Generic Block-level Disk Cache
 Name:		dmcache
 Version:	0.1
 Release:	%{_rel}
@@ -36,8 +36,8 @@ BuildRequires:	rpmbuild(macros) >= 1.379
 BuildRoot:	%{tmpdir}/%{name}-%{version}-root-%(id -u -n)
 
 %description
-Dm-cache provides a generic drivers-level disk cache for storage
-networking. It is built upon the Linux device-mapper, a generic drivers
+Dm-cache provides a generic block-level disk cache for storage
+networking. It is built upon the Linux device-mapper, a generic block
 device virtualization infrastructure. It can be transparently plugged
 into a client of any storage system, including SAN, iSCSI and AoE, and
 supports dynamic customization for policy-guided optimizations.
