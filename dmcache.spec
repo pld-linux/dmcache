@@ -1,9 +1,5 @@
 # TODO
-# - build fails as internal kernel headers are used like:
-#include "dm.h"
-#include "dm-io.h"
-#include "dm-bio-list.h"
-#include "kcopyd.h"
+# - make it use kernel headers, not -source
 #
 # Conditional build:
 %bcond_without	dist_kernel	# allow non-distribution kernel
@@ -15,9 +11,6 @@
 %undefine	with_dist_kernel
 %endif
 
-#
-# main package.
-#
 %define		_rel	0.1
 Summary:	DM-Cache: A Generic Block-level Disk Cache
 Name:		dmcache
@@ -25,14 +18,19 @@ Version:	0.1
 Release:	%{_rel}
 License:	GPL
 Group:		Base/Kernel
-# http://www.acis.ufl.edu/~ming/dmcache/patch-2.6.21
+Source0:	http://www.acis.ufl.edu/~ming/dmcache/dmc-setup.pl
+# Source0-md5:	f9a214936265781d30a11fbc1d6c0878
 Patch0:		linux-%{name}.patch
 URL:		http://www.acis.ufl.edu/~ming/dmcache/index.html
 BuildRequires:	patchutils
 %if %{with kernel}
-%{?with_dist_kernel:BuildRequires:	kernel%{_alt_kernel}-module-build >= 3:2.6.20.2}
+%if %{with dist_kernel}
+BuildRequires:	kernel%{_alt_kernel}-module-build >= 3:2.6.20.2
+BuildRequires:	kernel%{_alt_kernel}-source >= 3:2.6.20.2
+%endif
 BuildRequires:	rpmbuild(macros) >= 1.379
 %endif
+%{?with_userspace:BuildRequires:	perl-tools-pod}
 BuildRoot:	%{tmpdir}/%{name}-%{version}-root-%(id -u -n)
 
 %description
@@ -69,18 +67,18 @@ Ten pakiet zawiera moduł jądra Linuksa.
 
 %prep
 %setup -qcT
+install %{SOURCE0} .
 filterdiff -x '*/Kconfig' -x '*/Makefile' %{PATCH0} | %{__patch} -p1
 # prepare makefile:
 cat > drivers/md/Makefile << EOF
-
 obj-m += dm-cache.o
 
-# XXX
-CFLAGS += -I$(pwd)/../linux-2.6.22/drivers/md
+CFLAGS += -I%{_kernelsrcdir}/drivers/md
 EOF
 
 %build
 %if %{with userspace}
+pod2man dmc-setup.pl > dmc-setup.1
 %endif
 
 %if %{with kernel}
@@ -90,6 +88,9 @@ EOF
 %install
 rm -rf $RPM_BUILD_ROOT
 %if %{with userspace}
+install -d $RPM_BUILD_ROOT{%{_sbindir},%{_mandir}/man1}
+install dmc-setup.pl $RPM_BUILD_ROOT%{_sbindir}/dmc-setup
+install dmc-setup.1 $RPM_BUILD_ROOT%{_mandir}/man1
 %endif
 
 %if %{with kernel}
@@ -114,4 +115,6 @@ rm -rf $RPM_BUILD_ROOT
 %if %{with userspace}
 %files
 %defattr(644,root,root,755)
+%attr(755,root,root) %{_sbindir}/dmc-setup
+%{_mandir}/man1/dmc-setup.1*
 %endif
