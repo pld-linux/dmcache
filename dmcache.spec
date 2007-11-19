@@ -19,7 +19,7 @@
 # main package.
 #
 %define		_rel	0.1
-Summary:	DM-Cache: A Generic Block-level Disk Cache
+Summary:	DM-Cache: A Generic drivers-level Disk Cache
 Name:		dmcache
 Version:	0.1
 Release:	%{_rel}
@@ -36,8 +36,8 @@ BuildRequires:	rpmbuild(macros) >= 1.379
 BuildRoot:	%{tmpdir}/%{name}-%{version}-root-%(id -u -n)
 
 %description
-Dm-cache provides a generic block-level disk cache for storage
-networking. It is built upon the Linux device-mapper, a generic block
+Dm-cache provides a generic drivers-level disk cache for storage
+networking. It is built upon the Linux device-mapper, a generic drivers
 device virtualization infrastructure. It can be transparently plugged
 into a client of any storage system, including SAN, iSCSI and AoE, and
 supports dynamic customization for policy-guided optimizations.
@@ -46,7 +46,7 @@ applications show that dm-cache can significantly improve the
 performance and scalability of a storage system by orders of
 magnitude.
 
-%package -n kernel%{_alt_kernel}-block-dmcache
+%package -n kernel%{_alt_kernel}-drivers-dmcache
 Summary:	Linux driver for dmcache
 Summary(pl.UTF-8):	Sterownik dla Linuksa do dmcache
 Release:	%{_rel}@%{_kernel_ver_str}
@@ -57,12 +57,12 @@ Requires(post,postun):	/sbin/depmod
 Requires(postun):	%releq_kernel
 %endif
 
-%description -n kernel%{_alt_kernel}-block-dmcache
+%description -n kernel%{_alt_kernel}-drivers-dmcache
 This is driver for dmcache for Linux.
 
 This package contains Linux module.
 
-%description -n kernel%{_alt_kernel}-block-dmcache -l pl.UTF-8
+%description -n kernel%{_alt_kernel}-drivers-dmcache -l pl.UTF-8
 Sterownik dla Linuksa do dmcache.
 
 Ten pakiet zawiera moduł jądra Linuksa.
@@ -74,6 +74,9 @@ filterdiff -x '*/Kconfig' -x '*/Makefile' %{PATCH0} | %{__patch} -p1
 cat > drivers/md/Makefile << EOF
 
 obj-m += dm-cache.o
+
+# XXX
+CFLAGS += -I$(pwd)/../linux-2.6.22/drivers/md
 EOF
 
 %build
@@ -81,7 +84,7 @@ EOF
 %endif
 
 %if %{with kernel}
-%build_kernel_modules -C drivers/md -m dmcache
+%build_kernel_modules -C drivers/md -m dm-cache
 %endif
 
 %install
@@ -90,22 +93,22 @@ rm -rf $RPM_BUILD_ROOT
 %endif
 
 %if %{with kernel}
-%install_kernel_modules -m dmcache -d block
+%install_kernel_modules -m drivers/md/dm-cache -d kernel/drivers/md
 %endif
 
 %clean
 rm -rf $RPM_BUILD_ROOT
 
-%post	-n kernel%{_alt_kernel}-block-dmcache
+%post	-n kernel%{_alt_kernel}-drivers-dmcache
 %depmod %{_kernel_ver}
 
-%postun	-n kernel%{_alt_kernel}-block-dmcache
+%postun	-n kernel%{_alt_kernel}-drivers-dmcache
 %depmod %{_kernel_ver}
 
 %if %{with kernel}
-%files -n kernel%{_alt_kernel}-block-dmcache
+%files -n kernel%{_alt_kernel}-drivers-dmcache
 %defattr(644,root,root,755)
-/lib/modules/%{_kernel_ver}/block/*.ko*
+/lib/modules/%{_kernel_ver}/kernel/drivers/md/*.ko*
 %endif
 
 %if %{with userspace}
