@@ -13,6 +13,7 @@
 
 %define		_rel	0.1
 Summary:	DM-Cache: A Generic Block-level Disk Cache
+Summary(pl.UTF-8):	DM-Cache - ogólna pamięć podręczna na poziomie urządzeń blokowych
 Name:		dmcache
 Version:	0.1
 Release:	%{_rel}
@@ -44,9 +45,21 @@ applications show that dm-cache can significantly improve the
 performance and scalability of a storage system by orders of
 magnitude.
 
+%description -l pl.UTF-8
+dm-cache udostępnia ogólną pamięć podręczną na poziomie urządzeń
+blokowych dla dysków, z myślą o sieciowym dostępie do danych. Jest
+zbudowana w oparciu o linuksowy device-mapper - ogólną infrastrukturę
+wirtualizacji urządzeń blokowych. Może być w sposób przezroczysty
+włączony w klienta dowolnego systemu składowania danych, w tym SAN,
+iSCSI i AoE, ponadto obsługuje dynamiczne dostosowywanie do
+optymalizacji sterowanych polityką. Eksperymentalne szacowanie oparte
+na testach wydajności systemu plików i typowych aplikacji pokazuje, że
+dm-cache może znacząco poprawić wydajność i skalowalność systemu
+składowania danych o rzędy wielkości.
+
 %package -n kernel%{_alt_kernel}-drivers-dmcache
-Summary:	Linux driver for dmcache
-Summary(pl.UTF-8):	Sterownik dla Linuksa do dmcache
+Summary:	dm-cache Linux kernel driver
+Summary(pl.UTF-8):	Sterownik jądra Linuksa dm-cache
 Release:	%{_rel}@%{_kernel_ver_str}
 Group:		Base/Kernel
 Requires(post,postun):	/sbin/depmod
@@ -56,14 +69,10 @@ Requires(postun):	%releq_kernel
 %endif
 
 %description -n kernel%{_alt_kernel}-drivers-dmcache
-This is driver for dmcache for Linux.
-
-This package contains Linux module.
+dm-cache Linux kernel driver.
 
 %description -n kernel%{_alt_kernel}-drivers-dmcache -l pl.UTF-8
-Sterownik dla Linuksa do dmcache.
-
-Ten pakiet zawiera moduł jądra Linuksa.
+Sterownik jądra Linuksa dm-cache.
 
 %prep
 %setup -qcT
